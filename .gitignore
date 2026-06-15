@@ -1,0 +1,10 @@
+# **.gitignore** - tells Git which files to skip
+__pycache__/
+*.pyc
+*.pyo
+data/motor_data.csv
+*.exe
+.env
+PortableGit/
+gh_temp/
+gh.zip
