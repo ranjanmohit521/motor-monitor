@@ -716,58 +716,85 @@ def run_simulator():
     """Background thread that simulates ESP32 sensor data."""
     send_count = 0
     while True:
-        idx = (send_count // SCENARIO_DURATION) % len(SCENARIOS)
-        sc  = SCENARIOS[idx]
-
-        temp = round(random.uniform(*sc["temp"]) + random.gauss(0, 0.3), 2)
-        curr = round(random.uniform(*sc["curr"]) + random.gauss(0, 0.05), 3)
-        temp = max(20.0, min(100.0, temp))
-        curr = max(0.0, min(15.0, curr))
-        vib  = sc["vib"]
-
-        motor_status, alerts = evaluate_automation(temp, curr, vib)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        alert_str = "; ".join(alerts) if alerts else "Normal"
-
-        row = {
-            "timestamp":    timestamp,
-            "temperature":  round(temp, 2),
-            "current":      round(curr, 3),
-            "vibration":    vib,
-            "motor_status": motor_status,
-            "alert":        alert_str,
-        }
-
         try:
-            append_to_csv(row)
-        except Exception:
-            pass  # CSV may not be writable on cloud
+            idx = (send_count // SCENARIO_DURATION) % len(SCENARIOS)
+            sc  = SCENARIOS[idx]
 
-        with state_lock:
-            system_state["motor_status"]  = motor_status
-            system_state["active_alerts"] = alerts
-            system_state["last_reading"]  = row
-            data_history.append(row)
-            if len(data_history) > 500:
-                del data_history[:len(data_history) - 500]
+            temp = round(random.uniform(*sc["temp"]) + random.gauss(0, 0.3), 2)
+            curr = round(random.uniform(*sc["curr"]) + random.gauss(0, 0.05), 3)
+            temp = max(20.0, min(100.0, temp))
+            curr = max(0.0, min(15.0, curr))
+            vib  = sc["vib"]
 
-        print(f"  [SIM][{timestamp}] {sc['name']:10s} T={temp:.1f}C  "
-              f"I={curr:.2f}A  V={vib}  Motor={motor_status}")
+            motor_status, alerts = evaluate_automation(temp, curr, vib)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            alert_str = "; ".join(alerts) if alerts else "Normal"
+
+            row = {
+                "timestamp":    timestamp,
+                "temperature":  round(temp, 2),
+                "current":      round(curr, 3),
+                "vibration":    vib,
+                "motor_status": motor_status,
+                "alert":        alert_str,
+            }
+
+            try:
+                append_to_csv(row)
+            except Exception:
+                pass  # CSV may not be writable on cloud
+
+            with state_lock:
+                system_state["motor_status"]  = motor_status
+                system_state["active_alerts"] = alerts
+                system_state["last_reading"]  = row
+                data_history.append(row)
+                if len(data_history) > 500:
+                    del data_history[:len(data_history) - 500]
+
+            print(f"  [SIM][{timestamp}] {sc['name']:10s} T={temp:.1f}C  "
+                  f"I={curr:.2f}A  V={vib}  Motor={motor_status}")
+        except Exception as e:
+            print(f"  [SIMULATOR ERROR] {e}")
 
         send_count += 1
         time.sleep(SIMULATOR_INTERVAL)
 
 
-# ── Entry Point ───────────────────────────────────────────────
-def start_app():
-    ensure_csv()
-    # Start built-in simulator in background thread
-    sim_thread = threading.Thread(target=run_simulator, daemon=True)
-    sim_thread.start()
-    print("  [OK] Built-in simulator started (background thread)")
+# ── Startup & Debug ───────────────────────────────────────────
+simulator_started = False
+thread_lock = threading.Lock()
+
+@app.before_request
+def start_simulator_on_first_request():
+    global simulator_started
+    if not simulator_started:
+        with thread_lock:
+            if not simulator_started:
+                try:
+                    ensure_csv()
+                except Exception as e:
+                    print(f"  [CSV WARNING] Could not verify CSV setup: {e}")
+                sim_thread = threading.Thread(
+                    target=run_simulator, daemon=True, name="SimulatorThread"
+                )
+                sim_thread.start()
+                simulator_started = True
+                print("  [OK] Simulator thread started inside worker process")
 
 
-start_app()
+@app.route("/api/debug", methods=["GET"])
+def get_debug_info():
+    import threading
+    threads = [t.name for t in threading.enumerate()]
+    return jsonify({
+        "threads": threads,
+        "history_len": len(data_history),
+        "system_state": system_state,
+        "csv_path_exists": os.path.exists(CSV_PATH),
+        "simulator_started_flag": simulator_started,
+    })
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
